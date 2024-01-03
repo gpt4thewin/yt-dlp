@@ -1,3 +1,5 @@
+import re
+
 from .common import InfoExtractor
 from ..utils import (
     int_or_none,
@@ -8,8 +10,35 @@ from ..utils import (
     qualities,
     traverse_obj,
     unified_strdate,
-    xpath_text
+    xpath_text,
+    update_url_query,
+    datetime_from_str
 )
+
+
+def _parse_datetime(datetime_str):
+    datetime_format_with_microseconds = "%Y-%m-%dT%H:%M:%S.%f%z"
+    datetime_format_without_microseconds = "%Y-%m-%dT%H:%M:%S%z"
+
+    datetime_regex_with_microseconds = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,7}[+-]\d{2}:\d{2}"
+    datetime_regex_without_microseconds = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}"
+
+    if re.match(datetime_regex_with_microseconds, datetime_str):
+        try:
+            pattern = r"(\.\d{6})\d*"
+            datetime_str = re.sub(pattern, r"\1", datetime_str)
+            return datetime_from_str(datetime_str, format=datetime_format_with_microseconds)
+        except ValueError:
+            pass
+
+    if re.match(datetime_regex_without_microseconds, datetime_str):
+        try:
+            return datetime_from_str(datetime_str, format=datetime_format_without_microseconds)
+        except ValueError:
+            pass
+
+    # If both attempts failed, return None
+    return None
 
 
 class EuropaIE(InfoExtractor):
@@ -157,6 +186,11 @@ class EuroParlWebstreamIE(InfoExtractor):
                 'externalReference': display_id
             })
 
+        # TODO: Secure for live
+        start_actual = _parse_datetime(traverse_obj(json_info, 'startDateTime'))
+        end_actual = _parse_datetime(traverse_obj(json_info, 'endDateTime'))
+        video_duration = (end_actual - start_actual).total_seconds().__floor__()
+
         def _get_lang(track_identifier):
             if track_identifier is None:
                 return None
@@ -167,6 +201,7 @@ class EuroParlWebstreamIE(InfoExtractor):
 
         formats, subtitles = [], {}
         for hls_url in traverse_obj(json_info, ((('meetingVideo'), ('meetingVideos', ...)), 'hlsUrl')):
+            hls_url = update_url_query(hls_url, {'start': start_actual.strftime('%Y-%m-%dT%H:%M:%SZ'), 'end': end_actual.strftime('%Y-%m-%dT%H:%M:%SZ')})
             fmt, subs = self._extract_m3u8_formats_and_subtitles(hls_url, display_id)
             formats.extend(fmt)
             for elem in fmt:
@@ -179,5 +214,6 @@ class EuroParlWebstreamIE(InfoExtractor):
             'formats': formats,
             'subtitles': subtitles,
             'release_timestamp': parse_iso8601(json_info.get('startDateTime')),
-            'is_live': traverse_obj(webpage_nextjs, ('mediaItem', 'mediaSubType')) == 'Live'
+            'is_live': traverse_obj(webpage_nextjs, ('mediaItem', 'mediaSubType')) == 'Live',
+            'duration': video_duration,
         }
