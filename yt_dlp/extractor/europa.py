@@ -157,10 +157,20 @@ class EuroParlWebstreamIE(InfoExtractor):
                 'externalReference': display_id
             })
 
+        def _get_lang(track_identifier):
+            if track_identifier is None:
+                return None
+            for audio in json_info.get('meetingAudio', []):
+                if audio.get('trackIdentifier') == track_identifier:
+                    return audio.get('language')
+            return None
+
         formats, subtitles = [], {}
         for hls_url in traverse_obj(json_info, ((('meetingVideo'), ('meetingVideos', ...)), 'hlsUrl')):
             fmt, subs = self._extract_m3u8_formats_and_subtitles(hls_url, display_id)
             formats.extend(fmt)
+            for elem in fmt:
+                elem['language'] = _get_lang(elem.get('language'))
             self._merge_subtitles(subs, target=subtitles)
 
         return {
