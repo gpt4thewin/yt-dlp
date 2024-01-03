@@ -217,3 +217,113 @@ class EuroParlWebstreamIE(InfoExtractor):
             'is_live': traverse_obj(webpage_nextjs, ('mediaItem', 'mediaSubType')) == 'Live',
             'duration': video_duration,
         }
+
+
+class EuroParlWebstreamIE2(InfoExtractor):
+    # https://multimedia.europarl.europa.eu/fr/video/press-conference-by-roberta-metsola-ep-president-juan-fernando-lopez-aguilar-es-sd-tomas-tobe-se-epp-and-fabienne-keller-fr-renew-rapporteurs-on-the-outcome-of-the-migration-trilogue_I251079
+    #
+    _VALID_URL = r'''(?x)
+        https?://multimedia\.europarl\.europa\.eu/[a-z]{2}/
+        (?:video)([\w-]+)
+    '''
+    # _tests = [{
+    #     'url': 'https://multimedia.europarl.europa.eu/pl/webstreaming/plenary-session_20220914-0900-plenary',
+    #     'info_dict': {
+    #         'id': '62388b15-d85b-4add-99aa-ba12ccf64f0d',
+    #         'ext': 'mp4',
+    #         'title': 'plenary session',
+    #         'release_timestamp': 1663139069,
+    #         'release_date': '20220914',
+    #     },
+    #     'params': {
+    #         'skip_download': true,
+    #     }
+    # }, {
+    #     # live webstream
+    #     'url': 'https://multimedia.europarl.europa.eu/en/webstreaming/euroscola_20221115-1000-special-euroscola',
+    #     'info_dict': {
+    #         'ext': 'mp4',
+    #         'id': '510eda7f-ba72-161b-7ee7-0e836cd2e715',
+    #         'release_timestamp': 1668502800,
+    #         'title': 'euroscola 2022-11-15 19:21',
+    #         'release_date': '20221115',
+    #         'live_status': 'is_live',
+    #     },
+    #     'skip': 'not live anymore'
+    # }, {
+    #     'url': 'https://multimedia.europarl.europa.eu/en/webstreaming/committee-on-culture-and-education_20230301-1130-committee-cult',
+    #     'info_dict': {
+    #         'id': '7355662c-8eac-445e-4bb9-08db14b0ddd7',
+    #         'ext': 'mp4',
+    #         'release_date': '20230301',
+    #         'title': 'committee on culture and education',
+    #         'release_timestamp': 1677666641,
+    #     }
+    # }, {
+    #     # live stream
+    #     'url': 'https://multimedia.europarl.europa.eu/en/webstreaming/committee-on-environment-public-health-and-food-safety_20230524-0900-committee-envi',
+    #     'info_dict': {
+    #         'id': 'e4255f56-10aa-4b3c-6530-08db56d5b0d9',
+    #         'ext': 'mp4',
+    #         'release_date': '20230524',
+    #         'title': r're:committee on environment, public health and food safety \d{4}-\d{2}-\d{2}\s\d{2}:\d{2}',
+    #         'release_timestamp': 1684911541,
+    #         'live_status': 'is_live',
+    #     },
+    #     'skip': 'not live anymore'
+    # }]
+
+    def _real_extract(self, url):
+        display_id = self._match_id(url)
+        webpage = self._download_webpage(url, display_id)
+
+        webpage_nextjs = self._search_nextjs_data(webpage, display_id)['props']['pageProps']
+        entity_id = webpage_nextjs['entryId']
+        formats = webpage_nextjs['mediaItem']['videos']['resolutions'] # array: bitRate, format, resolution, size, url
+        subtitles = webpage_nextjs['mediaItemV2']['mediaAssets'] # array: label="transcript", textLang, url
+
+        # props.pageProps.mediaItemV2.mediaAssets[0]
+        # subtitles (embeded in json): props.pageProps.subtitles
+        # props.pageProps.mediaItemV2.duration
+        # props.pageProps.mediaItemV2.publicationStartDate
+        # props.pageProps.mediaItemV2.mediaDate
+
+        json_info = self._download_json(
+            'https://acs-api.europarl.connectedviews.eu/api/FullMeeting', display_id,
+            query={
+                'api-version': 1.0,
+                'tenantId': 'bae646ca-1fc8-4363-80ba-2c04f06b4968',
+                'externalReference': display_id
+            })
+
+        # TODO: Secure for live
+        start_actual = _parse_datetime(traverse_obj(json_info, 'startDateTime'))
+        end_actual = _parse_datetime(traverse_obj(json_info, 'endDateTime'))
+        video_duration = (end_actual - start_actual).total_seconds().__floor__()
+
+        def _get_lang(track_identifier):
+            if track_identifier is None:
+                return None
+            for audio in json_info.get('meetingAudio', []):
+                if audio.get('trackIdentifier') == track_identifier:
+                    return audio.get('language')
+            return None
+
+        formats, subtitles = [], {}
+        for hls_url in traverse_obj(json_info, ((('meetingVideo'), ('meetingVideos', ...)), 'hlsUrl')):
+            #hls_url = update_url_query(hls_url, {'start': start_actual.strftime('%Y-%m-%dT%H:%M:%SZ'), 'end': end_actual.strftime('%Y-%m-%dT%H:%M:%SZ')})
+            #fmt, subs = self._extract_m3u8_formats_and_subtitles(hls_url, display_id)
+            formats.extend(fmt)
+            for elem in fmt:
+                elem['language'] = _get_lang(elem.get('language'))
+            self._merge_subtitles(subs, target=subtitles)
+
+        return {
+            'id': json_info['id'],
+            'title': traverse_obj(webpage_nextjs, (('mediaItem', 'title'), ('title', )), get_all=False),
+            'formats': formats,
+            'subtitles': subtitles,
+            'release_timestamp': parse_iso8601(json_info.get('startDateTime')),
+            'is_live': traverse_obj(webpage_nextjs, ('mediaItem', 'mediaSubType')) == 'Live',
+            'duration': video_duration,
+        }
